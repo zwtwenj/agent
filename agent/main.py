@@ -1,8 +1,9 @@
 import os
 import sys
 from pathlib import Path
+from typing import Any
 
-# 添加 agent 目录到 Python 路径，确保可以导入 api 模块
+# 添加 agent 目录到 Python 路径，确保可以导入其他模块
 agent_dir = Path(__file__).parent
 if str(agent_dir) not in sys.path:
     sys.path.insert(0, str(agent_dir))
@@ -10,112 +11,166 @@ if str(agent_dir) not in sys.path:
 from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI
 from langchain.agents import create_agent
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import HumanMessage, AIMessage, ToolMessage
 from tools.tools import tools
+import json
 
-# 1. 加载环境变量（建议将 API Key 放在 .env 文件中）
+# 1. 加载环境变量
 load_dotenv()
+
 # 完全禁用 LangSmith 追踪（避免认证错误）
 os.environ["LANGCHAIN_TRACING_V2"] = "false"
-os.environ["LANGCHAIN_ENDPOINT"] = ""  # 清空端点
-os.environ["LANGCHAIN_API_KEY"] = ""  # 清空 API Key
+os.environ["LANGCHAIN_ENDPOINT"] = ""
+os.environ["LANGCHAIN_API_KEY"] = ""
+
 ali_key = os.getenv("ali_key")
 openai_api_key = os.getenv("OPENAI_API_KEY")
 
-# 3. 配置 LLM（大语言模型）
+# 2. 配置 LLM（大语言模型）
 llm = ChatOpenAI(
     model_name="deepseek-v3.2",
     temperature=0.5,
     api_key=ali_key,
     base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
-    streaming=False  # Agent 需要非流式模式
+    streaming=False
 )
 
-# 4. 构建系统提示词
-system_prompt = """
-你是一个专业的日常记录助手，帮助用户记录、查询和管理日常行为。
+# 3. 创建 Agent（使用 create_agent）
+agent = create_agent(llm, tools)
 
-【核心功能】
-1. 记录：使用 add_user_history 工具记录用户的行为和事件
-2. 查询：使用 get_user_chat_history 工具查询历史记录
-3. 时间：使用 get_time 工具获取当前时间信息
+# 4. 工具结果处理函数（处理三种格式：prompt、message、data）
+def process_tool_result(result, llm_instance):
+    """处理工具返回的三种格式"""
+    if isinstance(result, dict):
+        # 格式1: 包含 prompt 字段 -> 调用 LLM 生成内容
+        if "prompt" in result and result["prompt"]:
+            prompt_text = result["prompt"]
+            
+            # 调用 LLM 生成参数
+            generate_message = HumanMessage(
+                content=f"""{prompt_text}
 
-【工具使用规则】
-
-1. get_time 工具
-   - 用途：获取当前时间（年、月、日、时、分）
-   - 使用场景：需要当前时间时，或记录时用户未提供时间
-
-2. get_user_chat_history 工具
-   - 用途：查询用户的历史记录
-   - 参数：user_id (必需，整数，默认 1000001)
-   - 可选参数：date (日期字符串，格式 "YYYY-MM-DD")
-   - 使用场景：用户要查看、查询、回顾历史记录时
-
-3. add_user_history 工具
-   - 用途：添加新的记录
-   - 参数：
-     * time: 时间字符串，格式 "YYYY-MM-DD HH:MM"
-     * text: 记录内容（字符串）
-     * userId: 用户ID（整数，默认 1000001）
-   - 使用场景：用户要记录、添加、保存内容时
-   - 注意：如果用户没提供时间，先调用 get_time 获取
-
-【对话规则】
-1. 理解用户意图：仔细分析用户的需求
-2. 确认参数：如果缺少必需参数，询问用户或使用合理默认值（userId 默认 1000001）
-3. 执行操作：按顺序调用工具
-4. 总结结果：操作完成后，用清晰的方式展示结果
-
-【回答风格】
-- 使用中文，简洁友好
-- 操作前说明："我来帮你..."
-- 操作后总结："已完成，..."
-- 错误时说明："抱歉，...，建议..."
-
-【示例】
-用户："记录一下，今天下午去图书馆学习了"
-你：先调用 get_time 获取时间，然后调用 add_user_history 记录
-    回复："已记录：今天下午去图书馆学习了（时间：2026-02-03 14:30）"
-
-用户："查看我昨天的记录"
-你：调用 get_user_chat_history(user_id=1000001, date="2026-02-02")
-    整理查询结果并回复
-"""
-
-# 5. 使用新的 create_agent API 创建 Agent
-agent = create_agent(
-    model=llm,
-    system_prompt=system_prompt,
-    tools=tools,
-    debug=False  # 开启详细日志，能看到 Agent 的思考和工具调用过程
-)
-
-def userScanf():
-    try:
-        text=input('')
-        messages = []
-        # if memory_summary and "最后查询页码" in memory_summary:
-        #     # 将记忆信息作为上下文添加到消息中
-        #     context_message = f"[当前记忆状态：{memory_summary}]"
-        #     messages.append(HumanMessage(content=context_message))
+                【重要】请严格按照上述要求执行，不要有任何解释、说明、描述或 markdown 代码块。"""
+            )
+            
+            # 调用 LLM 生成参数
+            response = llm_instance.invoke([generate_message])
+            
+            # 提取生成的参数内容
+            generated_content = response.content if hasattr(response, 'content') else str(response)
+            
+            # 清理内容：移除可能的 markdown 代码块标记和多余文字
+            generated_content = generated_content.strip()
+            
+            # 移除 markdown 代码块
+            if generated_content.startswith('```'):
+                lines = generated_content.split('\n')
+                # 移除第一行（```json 或 ```）
+                if lines[0].startswith('```'):
+                    lines = lines[1:]
+                # 移除最后一行（```）
+                if lines and lines[-1].strip() == '```':
+                    lines = lines[:-1]
+                generated_content = '\n'.join(lines).strip()
+            return generated_content
         
-        messages.append(HumanMessage(content=text))
-        result=agent.invoke({"messages": messages})
-        response_content = result["messages"][-1].content
-        print(response_content)
-        userScanf()
-    except Exception as e:
-        print(f"错误: {e}")
-        import traceback
-        traceback.print_exc()
+        # 格式2: 包含 message 字段 -> 直接使用文本内容
+        elif "message" in result and result["message"]:
+            return str(result["message"])
+        
+        # 格式3: 包含 data 字段 -> 序列化为 JSON
+        elif "data" in result and result["data"] is not None:
+            return json.dumps(result["data"], ensure_ascii=False)
+        
+        # 如果字典中没有这三个字段，尝试序列化整个字典
+        else:
+            return json.dumps(result, ensure_ascii=False)
+    
+    # 如果返回的是字符串，直接使用（兼容旧格式）
+    elif isinstance(result, str):
+        return result
+    
+    # 其他类型，转换为字符串
+    else:
+        return json.dumps(result, ensure_ascii=False) if result is not None else ""
 
-def startAgent():
-    result=agent.invoke({"messages": [HumanMessage(content="你好，介绍一下自己")]})
-    print(result["messages"][-1].content)
-    # userScanf()
+class AccumulatorService:
+    def __init__(self, agent: Any):
+        self.agent = agent
+    
+    def run_accumulator_loop(self):
+        while True:
+            try:
+                # 获取用户输入
+                user_input = input("\n你: ").strip()
+                
+                # 检查退出命令
+                if user_input.lower() in ['exit', 'quit', '退出']:
+                    print("\n再见！")
+                    break
+                
+                if not user_input:
+                    continue
+                
+                print("\n正在处理...")
+                
+                # 调用 agent（create_agent 返回的图使用 messages 格式）
+                result = agent.invoke({
+                    "messages": [HumanMessage(content=user_input)]
+                })
+                
+                # 提取并显示最终回复
+                messages = result.get("messages", [])
+                
+                # 查找最后一条 AIMessage（LLM 的最终回复）
+                final_response = None
+                for msg in reversed(messages):
+                    if isinstance(msg, AIMessage):
+                        # 检查是否有工具调用
+                        if hasattr(msg, "tool_calls") and msg.tool_calls:
+                            print("\n[工具调用]")
+                            for tool_call in msg.tool_calls:
+                                tool_name = tool_call.name if hasattr(tool_call, "name") else tool_call.get("name", "未知")
+                                tool_args = tool_call.args if hasattr(tool_call, "args") else tool_call.get("args", {})
+                                print(f"  - 工具: {tool_name}")
+                                print(f"    参数: {tool_args}")
+                        else:
+                            # 这是最终回复
+                            final_response = msg
+                            break
+                
+                # 显示最终回复
+                if final_response and hasattr(final_response, "content"):
+                    content = final_response.content
+                    if content:
+                        print(f"\n助手: {content}")
+                    else:
+                        print("\n助手: (无回复内容)")
+                else:
+                    # 如果没有找到最终回复，显示所有消息
+                    print("\n[完整对话历史]")
+                    for i, msg in enumerate(messages, 1):
+                        if isinstance(msg, HumanMessage):
+                            print(f"{i}. [用户] {msg.content}")
+                        elif isinstance(msg, AIMessage):
+                            if hasattr(msg, "tool_calls") and msg.tool_calls:
+                                print(f"{i}. [助手-工具调用] {len(msg.tool_calls)} 个工具")
+                            else:
+                                print(f"{i}. [助手] {msg.content if hasattr(msg, 'content') else '(无内容)'}")
+                        elif isinstance(msg, ToolMessage):
+                            print(f"{i}. [工具结果] {msg.content[:100]}..." if len(str(msg.content)) > 100 else f"{i}. [工具结果] {msg.content}")
+                
+                print("\n" + "-" * 60)
+                
+            except KeyboardInterrupt:
+                print("\n\n程序已中断，再见！")
+                break
+            except Exception as e:
+                print(f"\n错误: {e}")
+                import traceback
+                traceback.print_exc()
 
+# ========== 使用示例 ==========
 if __name__ == "__main__":
-    startAgent()
-    # result=get_user_chat_history(1000001)
-    # print(result)
+    service = AccumulatorService(agent)
+    service.run_accumulator_loop()

@@ -9,11 +9,13 @@ def get_time():
     """
     now = datetime.now()
     return {
-        '年': now.year,
-        '月': now.month,
-        '日': now.day,
-        '时': now.hour,
-        '分': now.minute
+        "data": {
+            '年': now.year,
+            '月': now.month,
+            '日': now.day,
+            '时': now.hour,
+            '分': now.minute
+        }
     }
 
 get_time_tool = StructuredTool.from_function(

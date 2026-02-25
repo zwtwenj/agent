@@ -29,3 +29,6 @@ def get_user_chat_history_api(user_id: int, date: str):
     except Exception as e:
         print(f"获取用户chat历史失败: {e}")
         return None
+
+
+# https://focus.jdword.com/feisu/manage/customer/getCustomer
